@@ -1,0 +1,38 @@
+[project]
+name = "meticulous-log-redactor"
+version = "0.1.0"
+description = "Shared log redaction rules for the Meticulous espresso machine"
+requires-python = ">=3.11"
+# Stdlib only, deliberately. This module runs inside a logging filter on the
+# device; a dependency here would be a dependency in every service that logs.
+dependencies = []
+
+# Not published and not installed. Consumers vendor it as a git submodule, so
+# there is no build backend -- this file exists for the tool config below and to
+# record the Python floor.
+
+[dependency-groups]
+dev = [
+    "flake8==7.2.0",
+    "black==26.3.1",
+    "pytest>=8.0.0",
+]
+
+[tool.black]
+# Must match meticulous-backend's setting. The backend runs `black --check .` in
+# CI; if this repository formatted at a different width, every sync would
+# reformat the file in one repo and not the other. That is exactly how the two
+# pre-submodule copies diverged.
+line-length = 96
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The repository root IS the package: consumers check it out as `log_redactor/`
+# and import it by that name, which is what keeps the test files below identical
+# to the ones they run. Standalone that means the *parent* directory has to be
+# importable, and the checkout has to be named `log_redactor` -- pytest derives
+# the package name from the directory (_pytest.python.Package.setup), so a clone
+# left as `meticulous-log-redactor` fails to import with a confusing error about
+# a module named `__init__`. See README.
+pythonpath = [".."]

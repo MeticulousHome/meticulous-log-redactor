@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Checked out under the name the package is imported by. This is not
+    # cosmetic: the repository root is the package, and pytest derives the
+    # package name from the containing directory, so a checkout named anything
+    # else fails to import. See the note in pyproject.toml.
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        path: log_redactor
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Set up Python
+      run: uv python install
+      working-directory: log_redactor
+
+    - name: Install dependencies
+      run: uv sync --group dev
+      working-directory: log_redactor
+
+    - name: Lint with flake8
+      run: uv run flake8 .
+      working-directory: log_redactor
+
+    - name: Check code formatting with black
+      run: uv run black --check .
+      working-directory: log_redactor
+
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        path: log_redactor
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Set up Python
+      run: uv python install
+      working-directory: log_redactor
+
+    - name: Install dependencies
+      run: uv sync --group dev
+      working-directory: log_redactor
+
+    - name: Run tests
+      run: uv run pytest -v
+      working-directory: log_redactor
