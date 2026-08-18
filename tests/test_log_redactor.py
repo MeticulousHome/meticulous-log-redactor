@@ -5,8 +5,9 @@ import stat
 import tempfile
 import time
 import unittest
+from unittest import mock
 
-from log_redactor import load_key, redact
+from log_redactor import RedactionCancelled, load_key, redact
 
 TEST_KEY = bytes(range(32))
 
@@ -213,6 +214,58 @@ class LogRedactorTests(unittest.TestCase):
         self.assertEqual(output, text)
         self.assertLess(elapsed, 5)
         self.assertLess(peak_rss_kib, 128 * 1024)
+
+
+class RedactionCancellationTests(unittest.TestCase):
+    """redact()'s optional ``cancelled`` predicate: a caller may check it in
+    pass 1 (the anchored-rule line loop) and pass 2 (the learned-SSID sweep)
+    to abandon a run in progress. See log_collector.py in meticulous-watcher
+    for the production caller."""
+
+    def test_output_unchanged_when_predicate_never_signals(self):
+        """A predicate that is checked repeatedly but never fires must not
+        perturb output versus no predicate at all -- covers the KnownWifis
+        indentation-tracking path alongside plain SSID/MAC/credential rules."""
+
+        text = (
+            "config DEBUG CONF:   wifi:\r\n"
+            "config DEBUG CONF:     KnownWifis:\r\n"
+            "config DEBUG CONF:       Some Network 5G:\r\n"
+            "config DEBUG CONF:         password: example-pass\r\n"
+            "config DEBUG CONF:         last_used: yesterday\n"
+            "Config: added 'ssid' value 'HomeNet'\n"
+            "wlan0: Trying to associate with SSID 'HomeNet'\n"
+            "Associated with aa:bb:cc:dd:ee:ff\n"
+        )
+
+        baseline = redact(text, TEST_KEY)
+        never_signals = redact(text, TEST_KEY, cancelled=lambda: False)
+
+        self.assertEqual(baseline, never_signals)
+
+    def test_predicate_signalling_during_pass_one_raises_and_yields_nothing(self):
+        # 1200 lines cross check boundaries at line index 0, 500, 1000 --
+        # False, False, True fires on the third, proving the check repeats
+        # rather than firing only once at the very start.
+        text = "".join(f"line {i}\n" for i in range(1200))
+        cancelled = mock.Mock(side_effect=[False, False, True])
+
+        with self.assertRaises(RedactionCancelled):
+            redact(text, TEST_KEY, cancelled=cancelled)
+
+        self.assertEqual(cancelled.call_count, 3)
+
+    def test_predicate_signalling_during_pass_two_raises_and_yields_nothing(self):
+        # One line, one learned SSID: pass 1's single check (index 0) must
+        # return False so pass 1 completes and learns "HomeNet"; pass 2's
+        # per-SSID check then fires before any sweep substitution.
+        text = "Config: added 'ssid' value 'HomeNet'\n"
+        cancelled = mock.Mock(side_effect=[False, True])
+
+        with self.assertRaises(RedactionCancelled):
+            redact(text, TEST_KEY, cancelled=cancelled)
+
+        self.assertEqual(cancelled.call_count, 2)
 
 
 if __name__ == "__main__":

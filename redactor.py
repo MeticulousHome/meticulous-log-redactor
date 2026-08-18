@@ -248,12 +248,52 @@ TIMEZONE_ALLOWLIST = re.compile(r"^Etc/(?:UTC|GMT|Universal|Zulu|Greenwich)$")
 RE_TZ_ABBREV = re.compile(rf"(?P<pre>/{re.escape(TZ_MASK)}['\"]?\s*)\([^)\n]{{0,32}}\)")
 
 
-def redact(text, key, state=None):
+class RedactionCancelled(Exception):
+    """Raised by ``redact()`` when its ``cancelled`` predicate fires mid-pass.
+
+    Generic on purpose: this module is vendored standalone into both
+    meticulous-watcher and meticulous-backend, so it cannot know about either
+    consumer's own request-lifecycle exceptions. A consumer that wires up a
+    ``cancelled`` predicate is expected to catch this and translate it into
+    whatever its own callers already watch for.
+    """
+
+
+# "A few hundred iterations" per the design this implements: frequent enough
+# that an aborted pass 1 stops within a fraction of a second of being
+# signalled, rare enough that the check itself never shows up against a
+# >100k-line pass. Pass 2 checks every iteration instead of on an interval --
+# it is bounded by the SSID count, not the line count, so one iteration is
+# already the right grain there.
+_CANCEL_CHECK_INTERVAL = 500
+
+
+def _check_cancelled(cancelled, index=0, interval=1):
+    """Raise RedactionCancelled if ``cancelled`` is due to be polled and says
+    to stop.
+
+    A no-op unless ``cancelled`` is given, ``index`` lands on ``interval``,
+    and calling it reports True. Broken out of redact() itself so both passes
+    can each spend a single call on this rather than an inline compound
+    condition, which otherwise pushes redact()'s own branching past this
+    project's complexity ceiling for no behavioural reason.
+    """
+    if cancelled is not None and index % interval == 0 and cancelled():
+        raise RedactionCancelled()
+
+
+def redact(text, key, state=None, cancelled=None):
     """Two passes: anchored rules (which learn SSIDs), then a literal sweep.
 
     ``state`` carries KnownWifis block tracking across calls, for callers that
     feed one log record at a time. Omit it and every call starts fresh, which is
     what a whole-file caller wants.
+
+    ``cancelled``, if given, is a zero-argument callable returning True once
+    the caller's work should stop -- a ``threading.Event().is_set`` or
+    equivalent. It is checked periodically in pass 1 and once per learned SSID
+    in pass 2. Firing it raises ``RedactionCancelled`` and abandons the call
+    outright: no partially redacted text is ever returned.
     """
     learned_ssids = set()
     if state is None:
@@ -262,7 +302,9 @@ def redact(text, key, state=None):
     # ---------------- pass 1 ----------------
     out_lines = []
 
-    for line in text.splitlines(keepends=True):
+    for index, line in enumerate(text.splitlines(keepends=True)):
+        _check_cancelled(cancelled, index, _CANCEL_CHECK_INTERVAL)
+
         line = RE_CRED_KV.sub(_sub_cred, line)
         line = RE_CRED_NM.sub(_sub_cred, line)
 
@@ -356,6 +398,7 @@ def redact(text, key, state=None):
     # Catches the SSID wherever it appears in a message shape pass 1 does not
     # know about. Longest-first so a substring SSID cannot shadow a longer one.
     for ssid in sorted(learned_ssids, key=len, reverse=True):
+        _check_cancelled(cancelled)
         if len(ssid) < MIN_SWEEP_LEN or RE_ALREADY_DONE.match(ssid):
             continue
         text = re.sub(
