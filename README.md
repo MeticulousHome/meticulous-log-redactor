@@ -26,10 +26,13 @@ Import from the package, not from `redactor` directly:
 from log_redactor import redact, pseudonym, load_key, RedactionState
 ```
 
-- `redact(text, key, state=None)` → `(redacted_text, learned_ssids)`. Two passes:
-  anchored rules that learn SSIDs, then a literal sweep of what was learned.
-  Pass a `RedactionState` when feeding one log record at a time, so the
-  `KnownWifis` YAML block is still recognised across calls.
+- `redact(text, key, state=None, cancelled=None)` → `(redacted_text, learned_ssids)`.
+  Two passes: anchored rules that learn SSIDs, then a literal sweep of what was
+  learned. Pass a `RedactionState` when feeding one log record at a time, so
+  the `KnownWifis` YAML block is still recognised across calls. Pass
+  `cancelled`, a zero-argument callable returning True once the caller's work
+  should stop, to make a whole-file call abandon cleanly instead of running to
+  completion -- it raises `RedactionCancelled` and returns nothing.
 - `pseudonym(kind, value, key)` → `[KIND_xxxxxxxx]`, for call sites that already
   know the value and want the token this module would have produced for it.
 - `load_key(path=DEFAULT_KEY_PATH)` → the 32-byte per-device key, created on
