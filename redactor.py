@@ -1,9 +1,9 @@
 """Redaction rules for machine_logs.txt before it leaves the device.
 
-Scope: the must-redact set only (SSID, BSSID/MACs, IPv6, root_password,
-APPassword, IANA timezone). Tier-2 identifiers (serial, hostname, hawkbit ID)
-are deliberately NOT touched -- support needs them, and they are covered by
-retention policy rather than by this filter.
+Scope: the must-redact set only (SSID, BSSID/MACs, IPv6, credentials including
+pairing codes and bearer tokens, and IANA timezone). Tier-2 identifiers
+(serial, hostname, hawkbit ID) are deliberately NOT touched -- support needs
+them, and they are covered by retention policy rather than by this filter.
 
 Rule order is load-bearing; see RULES below.
 
@@ -114,13 +114,15 @@ class RedactionState:
 # eating "Password already set: True" and "password changed for root".
 _CRED_KEY = (
     r"root_?password|ap_?password|passwd|password|passphrase"
-    r"|psk|pre_?shared_?key|secret|token|api[_-]?key|authorization|bearer"
+    r"|psk|pre_?shared_?key|pairing[ _-]?code|secret|bearer_?token"
+    r"|token|api[_-]?key|authorization|bearer"
 )
 # The [REDACTED]/token alternative must come first: the bare-token branch
 # stops at "]", so without it a second pass would emit "[REDACTED]]".
 _CRED_VALUE = (
     r"""(?P<val>\[REDACTED\]|\[(?:SSID|MAC|IPV6)_[0-9a-f]{8}\]"""
-    r"""|'[^'\n]*'|"[^"\n]*"|[^\s,;}\]]+)"""
+    r"""|'[^'\n]*'|"[^"\n]*"|(?i:Bearer\s+)[A-Za-z0-9._~+/-]{8,}={0,2}"""
+    r"""|[^\s,;}\]]+)"""
 )
 
 # The optional quotes around the key are what let this match the JSON shape
@@ -133,6 +135,16 @@ RE_CRED_KV = re.compile(
 # NetworkManager's own shape: Config: added 'psk' value '<hidden>'
 RE_CRED_NM = re.compile(
     rf"(?P<key>added\s+'(?:{_CRED_KEY})'\s+value\s+)(?P<val>'[^'\n]*')",
+    re.IGNORECASE,
+)
+
+# Headers occasionally arrive in diagnostic messages without an
+# ``Authorization:`` key. Match the standard token68-style value after a
+# Bearer scheme, but require at least eight characters to avoid destroying
+# prose such as "bearer token missing".
+RE_BEARER_TOKEN = re.compile(
+    r"(?P<key>\bbearer)(?P<sep>\s+)"
+    r"(?P<val>[A-Za-z0-9._~+/-]{8,}={0,2})(?![A-Za-z0-9._~+/-=])",
     re.IGNORECASE,
 )
 
@@ -307,6 +319,7 @@ def redact(text, key, state=None, cancelled=None):
 
         line = RE_CRED_KV.sub(_sub_cred, line)
         line = RE_CRED_NM.sub(_sub_cred, line)
+        line = RE_BEARER_TOKEN.sub(_sub_cred, line)
 
         line = RE_MAC.sub(
             lambda m: (

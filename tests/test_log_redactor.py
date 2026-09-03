@@ -2,6 +2,7 @@ import json
 import os
 import resource
 import stat
+import sys
 import tempfile
 import time
 import unittest
@@ -81,6 +82,32 @@ class LogRedactorTests(unittest.TestCase):
     def test_network_manager_credential_form_is_redacted(self):
         output = self.redact("Config: added 'psk' value '<hidden>'")
         self.assertEqual(output, "Config: added 'psk' value '[REDACTED]'")
+
+    def test_pairing_code_and_bearer_tokens_are_redacted(self):
+        text = "\n".join(
+            [
+                "pairing code: 482913",
+                "Authorization: Bearer abcDEF-123_xyz987",
+                "request header Bearer abcDEF-123_xyz987",
+                "bearer_token=abcDEF-123_xyz987",
+            ]
+        )
+
+        output = self.redact(text)
+
+        self.assertNotIn("482913", output)
+        self.assertNotIn("abcDEF-123_xyz987", output)
+        self.assertEqual(
+            output,
+            "\n".join(
+                [
+                    "pairing code: [REDACTED]",
+                    "Authorization: [REDACTED]",
+                    "request header Bearer [REDACTED]",
+                    "bearer_token=[REDACTED]",
+                ]
+            ),
+        )
 
     def test_credentials_run_before_identifier_rules(self):
         output = self.redact("password: aa:bb:cc:dd:ee:ff")
@@ -210,6 +237,9 @@ class LogRedactorTests(unittest.TestCase):
         output = self.redact(text)
         elapsed = time.monotonic() - started
         peak_rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux reports KiB, while macOS reports bytes for the same field.
+        if sys.platform == "darwin":
+            peak_rss_kib //= 1024
 
         self.assertEqual(output, text)
         self.assertLess(elapsed, 5)
