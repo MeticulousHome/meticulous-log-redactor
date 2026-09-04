@@ -19,7 +19,9 @@
 
 ### 1.1 In scope — the must-redact set
 
-Seven classes, all confirmed present in production bundles:
+Nine classes. The original seven were confirmed in production bundles; pairing
+codes and bearer tokens are defense-in-depth coverage for the authorization
+flows added later:
 
 | Class | Example location in a real bundle | Why it must go |
 |---|---|---|
@@ -29,6 +31,8 @@ Seven classes, all confirmed present in production bundles:
 | **IPv6 address** | `avahi-daemon` address records | Stable link-local identifier derived from a persistent secret |
 | **`root_password`** | backend `config DEBUG CONF:` dump — **plaintext** | Credential. With `ssh_enabled: true` this is remote root on the unit. |
 | **`APPassword`** | backend `config DEBUG CONF:` dump | Credential for the machine's own hotspot |
+| **Pairing code** | diagnostic text keyed as `pairing code:` | Short-lived credential that authorizes a new client |
+| **Bearer token** | HTTP/auth diagnostic text | Long-lived per-device API credential |
 | **IANA timezone** | `systemd-timedated`: `Changed time zone to '<Area>/<City>' (CST).` | City-level location. The trailing parenthetical is part of the class — `(CST)` pins the offset on its own. |
 
 The Wi-Fi PSK is *already* correctly redacted upstream by NetworkManager
@@ -147,12 +151,14 @@ Two patterns. Runs **first** (see §6).
 
 ```
 KEY   := root_?password|ap_?password|passwd|password|passphrase
-       |psk|pre_?shared_?key|secret|token|api[_-]?key|authorization|bearer
+       |psk|pre_?shared_?key|pairing[ _-]?code|secret|bearer_?token
+       |token|api[_-]?key|authorization|bearer
 
 VALUE := \[REDACTED\]                          ← must be first alternative
        | \[(?:SSID|MAC|IPV6)_[0-9a-f]{8}\]     ← must be second
        | '[^'\n]*'
        | "[^"\n]*"
+       | (?i:Bearer\s+)[A-Za-z0-9._~+/-]{8,}={0,2}
        | [^\s,;}\]]+
 
 R1a (key/value, YAML + JSON):
@@ -160,6 +166,9 @@ R1a (key/value, YAML + JSON):
 
 R1b (NetworkManager form):
     (?P<key>added\s+'(?:KEY)'\s+value\s+)(?P<val>'[^'\n]*')             [IGNORECASE]
+
+R1c (standalone Bearer scheme):
+    (?P<key>\bbearer)(?P<sep>\s+)(?P<val>[A-Za-z0-9._~+/-]{8,}={0,2}) [IGNORECASE]
 ```
 
 **Replacement:** `key` + `sep` + `[REDACTED]`, re-wrapped in the original quote
@@ -176,6 +185,10 @@ return the match unchanged (I3).
   the rule eating `Password already set: True` and `password changed for root`.
 - The `[REDACTED]` alternative must precede the bare-token branch, which stops
   at `]` and would otherwise emit `[REDACTED]]` on a second pass.
+- The Bearer-aware value alternative consumes both the scheme and token after
+  an `Authorization:` key. R1c covers the same token shape when a diagnostic
+  message contains the scheme without the header key; its minimum length avoids
+  treating ordinary prose such as `bearer token missing` as a credential.
 
 ### R2 — MAC / BSSID
 
@@ -409,6 +422,8 @@ explicit boundary capture. Python `re` and PCRE are fine as written.
 | `Registering new address record for fe80::1122:3344:5566:7788 on wlan0.*.` | `…for [IPV6_…] on wlan0.*.` |
 | `CONF:   root_password: s3cr3tvalue` | `CONF:   root_password: [REDACTED]` |
 | `CONF:   APPassword: '123456789012'` | `CONF:   APPassword: '[REDACTED]'` |
+| `pairing code: 482913` | `pairing code: [REDACTED]` |
+| `Authorization: Bearer abcDEF-123_xyz987` | `Authorization: [REDACTED]` |
 | `{"root_password": "abc123", "serial": "332233"}` | `{"root_password": "[REDACTED]", "serial": "332233"}` |
 | `CONF:     KnownWifis:` → `CONF:       Some Network 5G:` | key → `[SSID_…]:` |
 | `user renamed network to HomeNet today` *(R6 only)* | `user renamed network to [SSID_…] today` |

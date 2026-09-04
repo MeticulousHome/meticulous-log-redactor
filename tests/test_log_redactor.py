@@ -1,9 +1,11 @@
 import json
 import os
-import resource
+from pathlib import Path
 import stat
+import subprocess
+import sys
 import tempfile
-import time
+import textwrap
 import unittest
 from unittest import mock
 
@@ -81,6 +83,32 @@ class LogRedactorTests(unittest.TestCase):
     def test_network_manager_credential_form_is_redacted(self):
         output = self.redact("Config: added 'psk' value '<hidden>'")
         self.assertEqual(output, "Config: added 'psk' value '[REDACTED]'")
+
+    def test_pairing_code_and_bearer_tokens_are_redacted(self):
+        text = "\n".join(
+            [
+                "pairing code: 482913",
+                "Authorization: Bearer abcDEF-123_xyz987",
+                "request header Bearer abcDEF-123_xyz987",
+                "bearer_token=abcDEF-123_xyz987",
+            ]
+        )
+
+        output = self.redact(text)
+
+        self.assertNotIn("482913", output)
+        self.assertNotIn("abcDEF-123_xyz987", output)
+        self.assertEqual(
+            output,
+            "\n".join(
+                [
+                    "pairing code: [REDACTED]",
+                    "Authorization: [REDACTED]",
+                    "request header Bearer [REDACTED]",
+                    "bearer_token=[REDACTED]",
+                ]
+            ),
+        )
 
     def test_credentials_run_before_identifier_rules(self):
         output = self.redact("password: aa:bb:cc:dd:ee:ff")
@@ -200,20 +228,53 @@ class LogRedactorTests(unittest.TestCase):
                 load_key(path)
 
     def test_ten_megabyte_runtime_and_memory_budget(self):
-        line = (
-            "2026-07-28 01:42:05.388326+00:00 tornado.access INFO "
-            "304 GET /api/v1/settings/ (10.10.0.79) 4.10ms\n"
+        # ru_maxrss is a process-lifetime high-water mark. Measuring it in the
+        # pytest worker makes this test depend on unrelated imports and tests
+        # that happened to run first (the backend suite alone starts this test
+        # above the 128 MiB budget). A fresh interpreter measures the redactor's
+        # actual process peak while preserving the same 10 MiB / 5 s / 128 MiB
+        # contract.
+        benchmark = textwrap.dedent("""
+            import json
+            import resource
+            import sys
+            import time
+
+            from log_redactor import redact
+
+            key = bytes(range(32))
+            line = (
+                "2026-07-28 01:42:05.388326+00:00 tornado.access INFO "
+                "304 GET /api/v1/settings/ (10.10.0.79) 4.10ms\\n"
+            )
+            text = line * ((10 * 1024 * 1024 // len(line)) + 1)
+
+            started = time.monotonic()
+            output = redact(text, key)[0]
+            elapsed = time.monotonic() - started
+            peak_rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == "darwin":
+                peak_rss_kib //= 1024
+
+            print(json.dumps({
+                "unchanged": output == text,
+                "elapsed": elapsed,
+                "peak_rss_kib": peak_rss_kib,
+            }))
+            """)
+        package_parent = Path(__file__).resolve().parents[2]
+        completed = subprocess.run(
+            [sys.executable, "-c", benchmark],
+            cwd=package_parent,
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        text = line * ((10 * 1024 * 1024 // len(line)) + 1)
+        metrics = json.loads(completed.stdout)
 
-        started = time.monotonic()
-        output = self.redact(text)
-        elapsed = time.monotonic() - started
-        peak_rss_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-
-        self.assertEqual(output, text)
-        self.assertLess(elapsed, 5)
-        self.assertLess(peak_rss_kib, 128 * 1024)
+        self.assertTrue(metrics["unchanged"])
+        self.assertLess(metrics["elapsed"], 5)
+        self.assertLess(metrics["peak_rss_kib"], 128 * 1024)
 
 
 class RedactionCancellationTests(unittest.TestCase):
